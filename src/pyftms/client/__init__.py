@@ -6,10 +6,10 @@ import logging
 from collections.abc import AsyncIterator
 from typing import Any
 
-from bleak import BleakScanner
+from bleak import BleakClient, BleakScanner
 from bleak.backends.device import BLEDevice
 from bleak.backends.scanner import AdvertisementData
-from bleak.exc import BleakDeviceNotFoundError
+from bleak.exc import BleakError, BleakDeviceNotFoundError
 from bleak.uuids import normalize_uuid_str
 
 from .backends import (
@@ -32,6 +32,7 @@ from .properties import (
     MachineType,
     MovementDirection,
     SettingRange,
+    get_machine_type_from_gatt,
     get_machine_type_from_service_data,
 )
 
@@ -112,7 +113,27 @@ async def discover_ftms_devices(
                         machine_type = get_machine_type_from_service_data(adv)
 
                     except NotFitnessMachineError:
-                        continue
+                        # The device advertises the FTMS service UUID but does
+                        # not include machine type in its service data (e.g.
+                        # Bodytone DU30). Fall back to GATT characteristic
+                        # inspection by briefly connecting to the device.
+                        if normalize_uuid_str(FTMS_UUID) not in adv.service_uuids:
+                            continue
+
+                        try:
+                            async with BleakClient(
+                                dev, services=[FTMS_UUID]
+                            ) as cli:
+                                machine_type = await get_machine_type_from_gatt(
+                                    cli
+                                )
+                        except (BleakError, NotFitnessMachineError, OSError):
+                            _LOGGER.debug(
+                                "Could not determine machine type for '%s' "
+                                "via GATT fallback.",
+                                dev.address,
+                            )
+                            continue
 
                     devices.add(dev.address)
 
